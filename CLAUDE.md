@@ -35,6 +35,7 @@ npm run test:multiturn     # Multi-turn with tools
 npm run test:streaming     # Streaming SSE events
 npm run test:interleaved   # Interleaved thinking
 npm run test:images        # Image processing
+npm run test:caching       # Prompt caching
 ```
 
 ## Architecture
@@ -57,10 +58,16 @@ Claude Code CLI → Express Server (server.js) → CloudCode Client → Antigrav
 - **src/utils/helpers.js**: Shared utility functions (`formatDuration`, `sleep`)
 
 **Multi-Account Load Balancing:**
-- Round-robin rotation across configured accounts
-- Automatic switch on 429 rate limit errors
-- Configurable cooldown period for rate-limited accounts
+- Sticky account selection for prompt caching (stays on same account across turns)
+- Automatic switch only when rate-limited for > 2 minutes
+- Session ID derived from first user message hash for cache continuity
 - Account state persisted to `~/.config/antigravity-proxy/accounts.json`
+
+**Prompt Caching:**
+- Cache is organization-scoped (requires same account + session ID)
+- Session ID is SHA256 hash of first user message content (stable across turns)
+- `cache_read_input_tokens` returned in usage metadata when cache hits
+- Token calculation: `input_tokens = promptTokenCount - cachedContentTokenCount`
 
 ## Testing Notes
 
@@ -90,4 +97,4 @@ Claude Code CLI → Express Server (server.js) → CloudCode Client → Antigrav
 
 ## Maintenance
 
-When making significant changes to the codebase (new modules, refactoring, architectural changes), update this CLAUDE.md file to keep documentation in sync.
+When making significant changes to the codebase (new modules, refactoring, architectural changes), update this CLAUDE.md and the README.md file to keep documentation in sync.

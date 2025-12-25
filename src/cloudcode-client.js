@@ -43,6 +43,44 @@ function isAuthInvalidError(error) {
 }
 
 /**
+ * Derive a stable session ID from the first user message in the conversation.
+ * This ensures the same conversation uses the same session ID across turns,
+ * enabling prompt caching (cache is scoped to session + organization).
+ *
+ * @param {Object} anthropicRequest - The Anthropic-format request
+ * @returns {string} A stable session ID (32 hex characters) or random UUID if no user message
+ */
+function deriveSessionId(anthropicRequest) {
+    const messages = anthropicRequest.messages || [];
+
+    // Find the first user message
+    for (const msg of messages) {
+        if (msg.role === 'user') {
+            let content = '';
+
+            if (typeof msg.content === 'string') {
+                content = msg.content;
+            } else if (Array.isArray(msg.content)) {
+                // Extract text from content blocks
+                content = msg.content
+                    .filter(block => block.type === 'text' && block.text)
+                    .map(block => block.text)
+                    .join('\n');
+            }
+
+            if (content) {
+                // Hash the content with SHA256, return first 32 hex chars
+                const hash = crypto.createHash('sha256').update(content).digest('hex');
+                return hash.substring(0, 32);
+            }
+        }
+    }
+
+    // Fallback to random UUID if no user message found
+    return crypto.randomUUID();
+}
+
+/**
  * Parse reset time from HTTP response or error
  * Checks headers first, then error message body
  * Returns milliseconds or null if not found
@@ -184,8 +222,8 @@ function buildCloudCodeRequest(anthropicRequest, projectId) {
     const model = mapModelName(anthropicRequest.model);
     const googleRequest = convertAnthropicToGoogle(anthropicRequest);
 
-    // Use random session ID for API tracking
-    googleRequest.sessionId = crypto.randomUUID();
+    // Use stable session ID derived from first user message for cache continuity
+    googleRequest.sessionId = deriveSessionId(anthropicRequest);
 
     const payload = {
         project: projectId,
@@ -244,26 +282,35 @@ export async function sendMessage(anthropicRequest, accountManager) {
     const maxAttempts = Math.max(MAX_RETRIES, accountManager.getAccountCount() + 1);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        // Get next available account
-        let account = accountManager.pickNext();
+        // Use sticky account selection for cache continuity
+        const { account: stickyAccount, waitMs } = accountManager.pickStickyAccount();
+        let account = stickyAccount;
+
+        // Handle waiting for sticky account
+        if (!account && waitMs > 0) {
+            console.log(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
+            await sleep(waitMs);
+            accountManager.clearExpiredLimits();
+            account = accountManager.getCurrentStickyAccount();
+        }
 
         // Handle all accounts rate-limited
         if (!account) {
             if (accountManager.isAllRateLimited()) {
-                const waitMs = accountManager.getMinWaitTimeMs();
-                const resetTime = new Date(Date.now() + waitMs).toISOString();
+                const allWaitMs = accountManager.getMinWaitTimeMs();
+                const resetTime = new Date(Date.now() + allWaitMs).toISOString();
 
                 // If wait time is too long (> 2 minutes), throw error immediately
-                if (waitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                if (allWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
                     throw new Error(
-                        `RESOURCE_EXHAUSTED: Rate limited. Quota will reset after ${formatDuration(waitMs)}. Next available: ${resetTime}`
+                        `RESOURCE_EXHAUSTED: Rate limited. Quota will reset after ${formatDuration(allWaitMs)}. Next available: ${resetTime}`
                     );
                 }
 
                 // Wait for reset (applies to both single and multi-account modes)
                 const accountCount = accountManager.getAccountCount();
-                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(waitMs)}...`);
-                await sleep(waitMs);
+                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
+                await sleep(allWaitMs);
                 accountManager.clearExpiredLimits();
                 account = accountManager.pickNext();
             }
@@ -498,26 +545,35 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
     const maxAttempts = Math.max(MAX_RETRIES, accountManager.getAccountCount() + 1);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        // Get next available account
-        let account = accountManager.pickNext();
+        // Use sticky account selection for cache continuity
+        const { account: stickyAccount, waitMs } = accountManager.pickStickyAccount();
+        let account = stickyAccount;
+
+        // Handle waiting for sticky account
+        if (!account && waitMs > 0) {
+            console.log(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
+            await sleep(waitMs);
+            accountManager.clearExpiredLimits();
+            account = accountManager.getCurrentStickyAccount();
+        }
 
         // Handle all accounts rate-limited
         if (!account) {
             if (accountManager.isAllRateLimited()) {
-                const waitMs = accountManager.getMinWaitTimeMs();
-                const resetTime = new Date(Date.now() + waitMs).toISOString();
+                const allWaitMs = accountManager.getMinWaitTimeMs();
+                const resetTime = new Date(Date.now() + allWaitMs).toISOString();
 
                 // If wait time is too long (> 2 minutes), throw error immediately
-                if (waitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                if (allWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
                     throw new Error(
-                        `RESOURCE_EXHAUSTED: Rate limited. Quota will reset after ${formatDuration(waitMs)}. Next available: ${resetTime}`
+                        `RESOURCE_EXHAUSTED: Rate limited. Quota will reset after ${formatDuration(allWaitMs)}. Next available: ${resetTime}`
                     );
                 }
 
                 // Wait for reset (applies to both single and multi-account modes)
                 const accountCount = accountManager.getAccountCount();
-                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(waitMs)}...`);
-                await sleep(waitMs);
+                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
+                await sleep(allWaitMs);
                 accountManager.clearExpiredLimits();
                 account = accountManager.pickNext();
             }
@@ -629,6 +685,7 @@ async function* streamSSEResponse(response, originalModel) {
     let currentThinkingSignature = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
     let stopReason = 'end_turn';
 
     const reader = response.body.getReader();
@@ -653,11 +710,12 @@ async function* streamSSEResponse(response, originalModel) {
                 const data = JSON.parse(jsonText);
                 const innerResponse = data.response || data;
 
-                // Extract usage metadata
+                // Extract usage metadata (including cache tokens)
                 const usage = innerResponse.usageMetadata;
                 if (usage) {
                     inputTokens = usage.promptTokenCount || inputTokens;
                     outputTokens = usage.candidatesTokenCount || outputTokens;
+                    cacheReadTokens = usage.cachedContentTokenCount || cacheReadTokens;
                 }
 
                 const candidates = innerResponse.candidates || [];
@@ -666,6 +724,7 @@ async function* streamSSEResponse(response, originalModel) {
                 const parts = content.parts || [];
 
                 // Emit message_start on first data
+                // Note: input_tokens = promptTokenCount - cachedContentTokenCount (Antigravity includes cached in total)
                 if (!hasEmittedStart && parts.length > 0) {
                     hasEmittedStart = true;
                     yield {
@@ -678,7 +737,12 @@ async function* streamSSEResponse(response, originalModel) {
                             model: originalModel,
                             stop_reason: null,
                             stop_sequence: null,
-                            usage: { input_tokens: inputTokens, output_tokens: 0 }
+                            usage: {
+                                input_tokens: inputTokens - cacheReadTokens,
+                                output_tokens: 0,
+                                cache_read_input_tokens: cacheReadTokens,
+                                cache_creation_input_tokens: 0
+                            }
                         }
                     };
                 }
@@ -817,7 +881,12 @@ async function* streamSSEResponse(response, originalModel) {
                 model: originalModel,
                 stop_reason: null,
                 stop_sequence: null,
-                usage: { input_tokens: inputTokens, output_tokens: 0 }
+                usage: {
+                    input_tokens: inputTokens - cacheReadTokens,
+                    output_tokens: 0,
+                    cache_read_input_tokens: cacheReadTokens,
+                    cache_creation_input_tokens: 0
+                }
             }
         };
 
@@ -850,7 +919,11 @@ async function* streamSSEResponse(response, originalModel) {
     yield {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: null },
-        usage: { output_tokens: outputTokens }
+        usage: {
+            output_tokens: outputTokens,
+            cache_read_input_tokens: cacheReadTokens,
+            cache_creation_input_tokens: 0
+        }
     };
 
     yield { type: 'message_stop' };

@@ -15,7 +15,8 @@ import {
     TOKEN_REFRESH_INTERVAL_MS,
     ANTIGRAVITY_ENDPOINT_FALLBACKS,
     ANTIGRAVITY_HEADERS,
-    DEFAULT_PROJECT_ID
+    DEFAULT_PROJECT_ID,
+    MAX_WAIT_BEFORE_ERROR_MS
 } from './constants.js';
 import { refreshAccessToken } from './oauth.js';
 import { formatDuration } from './utils/helpers.js';
@@ -198,7 +199,8 @@ export class AccountManager {
     }
 
     /**
-     * Pick the next available account (round-robin)
+     * Pick the next available account (round-robin).
+     * Sets activeIndex to the selected account's index.
      * @returns {Object|null} The next available account or null if none available
      */
     pickNext() {
@@ -209,24 +211,127 @@ export class AccountManager {
             return null;
         }
 
-        // Find next available account starting from current index
-        for (let i = 0; i < this.#accounts.length; i++) {
+        // Clamp index to valid range
+        if (this.#currentIndex >= this.#accounts.length) {
+            this.#currentIndex = 0;
+        }
+
+        // Find next available account starting from index AFTER current
+        for (let i = 1; i <= this.#accounts.length; i++) {
             const idx = (this.#currentIndex + i) % this.#accounts.length;
             const account = this.#accounts[idx];
 
             if (!account.isRateLimited && !account.isInvalid) {
-                this.#currentIndex = (idx + 1) % this.#accounts.length;
+                // Set activeIndex to this account (not +1)
+                this.#currentIndex = idx;
                 account.lastUsed = Date.now();
 
-                const position = this.#accounts.indexOf(account) + 1;
+                const position = idx + 1;
                 const total = this.#accounts.length;
                 console.log(`[AccountManager] Using account: ${account.email} (${position}/${total})`);
+
+                // Persist the change (don't await to avoid blocking)
+                this.saveToDisk();
 
                 return account;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Get the current account without advancing the index (sticky selection).
+     * Used for cache continuity - sticks to the same account until rate-limited.
+     * @returns {Object|null} The current account or null if unavailable/rate-limited
+     */
+    getCurrentStickyAccount() {
+        this.clearExpiredLimits();
+
+        if (this.#accounts.length === 0) {
+            return null;
+        }
+
+        // Clamp index to valid range
+        if (this.#currentIndex >= this.#accounts.length) {
+            this.#currentIndex = 0;
+        }
+
+        // Get current account directly (activeIndex = current account)
+        const account = this.#accounts[this.#currentIndex];
+
+        // Return if available
+        if (account && !account.isRateLimited && !account.isInvalid) {
+            account.lastUsed = Date.now();
+            // Persist the change (don't await to avoid blocking)
+            this.saveToDisk();
+            return account;
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if we should wait for the current account's rate limit to reset.
+     * Used for sticky account selection - wait if rate limit is short (≤ threshold).
+     * @returns {{shouldWait: boolean, waitMs: number, account: Object|null}}
+     */
+    shouldWaitForCurrentAccount() {
+        if (this.#accounts.length === 0) {
+            return { shouldWait: false, waitMs: 0, account: null };
+        }
+
+        // Clamp index to valid range
+        if (this.#currentIndex >= this.#accounts.length) {
+            this.#currentIndex = 0;
+        }
+
+        // Get current account directly (activeIndex = current account)
+        const account = this.#accounts[this.#currentIndex];
+
+        if (!account || account.isInvalid) {
+            return { shouldWait: false, waitMs: 0, account: null };
+        }
+
+        if (account.isRateLimited && account.rateLimitResetTime) {
+            const waitMs = account.rateLimitResetTime - Date.now();
+
+            // If wait time is within threshold, recommend waiting
+            if (waitMs > 0 && waitMs <= MAX_WAIT_BEFORE_ERROR_MS) {
+                return { shouldWait: true, waitMs, account };
+            }
+        }
+
+        return { shouldWait: false, waitMs: 0, account };
+    }
+
+    /**
+     * Pick an account with sticky selection preference.
+     * Prefers the current account for cache continuity, only switches when:
+     * - Current account is rate-limited for > 2 minutes
+     * - Current account is invalid
+     * @returns {{account: Object|null, waitMs: number}} Account to use and optional wait time
+     */
+    pickStickyAccount() {
+        // First try to get the current sticky account
+        const stickyAccount = this.getCurrentStickyAccount();
+        if (stickyAccount) {
+            return { account: stickyAccount, waitMs: 0 };
+        }
+
+        // Check if we should wait for current account
+        const waitInfo = this.shouldWaitForCurrentAccount();
+        if (waitInfo.shouldWait) {
+            console.log(`[AccountManager] Waiting ${formatDuration(waitInfo.waitMs)} for sticky account: ${waitInfo.account.email}`);
+            return { account: null, waitMs: waitInfo.waitMs };
+        }
+
+        // Current account unavailable for too long, switch to next available
+        const nextAccount = this.pickNext();
+        if (nextAccount) {
+            console.log(`[AccountManager] Switched to new account for cache: ${nextAccount.email}`);
+        }
+        return { account: nextAccount, waitMs: 0 };
     }
 
     /**

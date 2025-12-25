@@ -10,7 +10,6 @@
 import crypto from 'crypto';
 import {
     MODEL_MAPPINGS,
-    DEFAULT_THINKING_BUDGET,
     CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
     MIN_SIGNATURE_LENGTH
 } from './constants.js';
@@ -502,21 +501,27 @@ export function convertAnthropicToGoogle(anthropicRequest) {
 
     // Enable thinking for Claude thinking models
     if (isClaudeThinkingModel) {
-        // Get budget from request or use default
-        const thinkingBudget = thinking?.budget_tokens || DEFAULT_THINKING_BUDGET;
-
-        googleRequest.generationConfig.thinkingConfig = {
-            include_thoughts: true,
-            thinking_budget: thinkingBudget
+        const thinkingConfig = {
+            include_thoughts: true
         };
 
-        // Ensure maxOutputTokens is large enough for thinking models
-        if (!googleRequest.generationConfig.maxOutputTokens ||
-            googleRequest.generationConfig.maxOutputTokens <= thinkingBudget) {
-            googleRequest.generationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
+        // Only set thinking_budget if explicitly provided
+        const thinkingBudget = thinking?.budget_tokens;
+        if (thinkingBudget) {
+            thinkingConfig.thinking_budget = thinkingBudget;
+
+            // Ensure maxOutputTokens is large enough when budget is specified
+            if (!googleRequest.generationConfig.maxOutputTokens ||
+                googleRequest.generationConfig.maxOutputTokens <= thinkingBudget) {
+                googleRequest.generationConfig.maxOutputTokens = CLAUDE_THINKING_MAX_OUTPUT_TOKENS;
+            }
+
+            console.log('[FormatConverter] Thinking enabled with budget:', thinkingBudget);
+        } else {
+            console.log('[FormatConverter] Thinking enabled (no budget specified)');
         }
 
-        console.log('[FormatConverter] Thinking enabled with budget:', thinkingBudget);
+        googleRequest.generationConfig.thinkingConfig = thinkingConfig;
     }
 
     // Convert tools to Google format
@@ -696,7 +701,11 @@ export function convertGoogleToAnthropic(googleResponse, model) {
     }
 
     // Extract usage metadata
+    // Note: Antigravity's promptTokenCount is the TOTAL (includes cached),
+    // but Anthropic's input_tokens excludes cached. We subtract to match.
     const usageMetadata = response.usageMetadata || {};
+    const promptTokens = usageMetadata.promptTokenCount || 0;
+    const cachedTokens = usageMetadata.cachedContentTokenCount || 0;
 
     return {
         id: `msg_${crypto.randomBytes(16).toString('hex')}`,
@@ -707,8 +716,10 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         stop_reason: stopReason,
         stop_sequence: null,
         usage: {
-            input_tokens: usageMetadata.promptTokenCount || 0,
-            output_tokens: usageMetadata.candidatesTokenCount || 0
+            input_tokens: promptTokens - cachedTokens,
+            output_tokens: usageMetadata.candidatesTokenCount || 0,
+            cache_read_input_tokens: cachedTokens,
+            cache_creation_input_tokens: 0
         }
     };
 }

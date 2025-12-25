@@ -1,6 +1,6 @@
 # Antigravity Claude Proxy
 
-A proxy server that exposes an **Anthropic-compatible API** backed by **Antigravity's Cloud Code**, letting you use Claude models like `claude-sonnet-4-5-thinking` and `claude-opus-4-5-thinking` with **Claude Code CLI**.
+A proxy server that exposes an **Anthropic-compatible API** backed by **Antigravity's Cloud Code**, letting you use Claude models like sonnet and opus with **Claude Code CLI**.
 
 ## How It Works
 
@@ -104,7 +104,7 @@ Add this configuration:
     "ANTHROPIC_MODEL": "claude-opus-4-5-thinking",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-thinking",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-thinking",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5-thinking",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5",
     "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-5-thinking"
   }
 }
@@ -128,6 +128,7 @@ claude
 |----------|-------------|
 | `claude-sonnet-4-5-thinking` | Claude Sonnet 4.5 with extended thinking |
 | `claude-opus-4-5-thinking` | Claude Opus 4.5 with extended thinking |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 without thinking |
 
 Standard Anthropic model names are automatically mapped:
 - `claude-sonnet-4-5-20250514` → `claude-sonnet-4-5-thinking`
@@ -139,10 +140,11 @@ Standard Anthropic model names are automatically mapped:
 
 When you add multiple accounts, the proxy automatically:
 
-- **Round-robin rotation**: Each request uses the next available account
-- **Rate limit handling**: Automatically switches to next account on 429 errors
-- **Smart cooldown**: Rate-limited accounts become available after cooldown expires
+- **Sticky account selection**: Stays on the same account to maximize prompt cache hits
+- **Smart rate limit handling**: Waits for short rate limits (≤2 min), switches accounts for longer ones
+- **Automatic cooldown**: Rate-limited accounts become available after reset time expires
 - **Invalid account detection**: Accounts needing re-authentication are marked and skipped
+- **Prompt caching support**: Stable session IDs enable cache hits across conversation turns
 
 Check account status anytime:
 
@@ -184,6 +186,7 @@ npm run test:multiturn     # Multi-turn with tools
 npm run test:streaming     # Streaming SSE events
 npm run test:interleaved   # Interleaved thinking
 npm run test:images        # Image processing
+npm run test:caching       # Prompt caching
 ```
 
 ---
@@ -220,31 +223,6 @@ Re-authenticate the account:
 ```bash
 npm run accounts
 # Choose "Re-authenticate" for the invalid account
-```
-
----
-
-## Project Structure
-
-```
-src/
-├── index.js            # Entry point
-├── server.js           # Express server with Anthropic API endpoints
-├── cloudcode-client.js # Cloud Code API client with retry/failover
-├── format-converter.js # Anthropic ↔ Google format conversion
-├── account-manager.js  # Multi-account management
-├── accounts-cli.js     # Account management CLI
-├── oauth.js            # Google OAuth implementation
-├── constants.js        # Endpoints, headers, model mappings
-└── token-extractor.js  # Legacy token extraction from Antigravity
-
-tests/
-├── run-all.cjs                           # Test runner
-├── test-thinking-signatures.cjs          # Thinking block tests
-├── test-multiturn-thinking-tools.cjs     # Multi-turn tests
-├── test-multiturn-thinking-tools-streaming.cjs
-├── test-interleaved-thinking.cjs
-└── test-images.cjs
 ```
 
 ---

@@ -93,7 +93,6 @@ export const MAX_ACCOUNTS = 10; // Maximum number of accounts allowed
 export const MAX_WAIT_BEFORE_ERROR_MS = 120000; // 2 minutes - throw error if wait exceeds this
 
 // Thinking model constants
-export const DEFAULT_THINKING_BUDGET = 16000; // Default thinking budget tokens
 export const CLAUDE_THINKING_MAX_OUTPUT_TOKENS = 64000; // Max output tokens for thinking models
 export const MIN_SIGNATURE_LENGTH = 50; // Minimum valid thinking signature length
 
@@ -131,7 +130,6 @@ export default {
     MAX_RETRIES,
     MAX_ACCOUNTS,
     MAX_WAIT_BEFORE_ERROR_MS,
-    DEFAULT_THINKING_BUDGET,
     CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
     MIN_SIGNATURE_LENGTH,
     OAUTH_CONFIG,

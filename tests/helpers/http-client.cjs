@@ -178,6 +178,42 @@ function analyzeEvents(events) {
     };
 }
 
+/**
+ * Extract usage metadata from SSE events
+ * @param {Array} events - Array of SSE events
+ * @returns {Object} - Usage info with input/output/cache tokens
+ */
+function extractUsage(events) {
+    const usage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0
+    };
+
+    // Get usage from message_start
+    const messageStart = events.find(e => e.type === 'message_start');
+    if (messageStart?.data?.message?.usage) {
+        const startUsage = messageStart.data.message.usage;
+        usage.input_tokens = startUsage.input_tokens || 0;
+        usage.cache_read_input_tokens = startUsage.cache_read_input_tokens || 0;
+        usage.cache_creation_input_tokens = startUsage.cache_creation_input_tokens || 0;
+    }
+
+    // Get output tokens from message_delta
+    const messageDelta = events.find(e => e.type === 'message_delta');
+    if (messageDelta?.data?.usage) {
+        const deltaUsage = messageDelta.data.usage;
+        usage.output_tokens = deltaUsage.output_tokens || 0;
+        // Also check for cache tokens in delta (may be updated)
+        if (deltaUsage.cache_read_input_tokens !== undefined) {
+            usage.cache_read_input_tokens = deltaUsage.cache_read_input_tokens;
+        }
+    }
+
+    return usage;
+}
+
 // Common tool definitions for tests
 const commonTools = {
     getWeather: {
@@ -256,5 +292,6 @@ module.exports = {
     makeRequest,
     analyzeContent,
     analyzeEvents,
+    extractUsage,
     commonTools
 };
