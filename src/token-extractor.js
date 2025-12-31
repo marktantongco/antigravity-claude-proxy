@@ -6,45 +6,15 @@
  * so this approach doesn't require any manual intervention.
  */
 
-import { execSync } from 'child_process';
 import {
     TOKEN_REFRESH_INTERVAL_MS,
-    ANTIGRAVITY_AUTH_PORT,
-    ANTIGRAVITY_DB_PATH
+    ANTIGRAVITY_AUTH_PORT
 } from './constants.js';
+import { getAuthStatus } from './db/database.js';
 
 // Cache for the extracted token
 let cachedToken = null;
 let tokenExtractedAt = null;
-
-/**
- * Extract token from Antigravity's SQLite database
- * This is the preferred method as the DB is auto-updated
- */
-function extractTokenFromDB() {
-    try {
-        const result = execSync(
-            `sqlite3 "${ANTIGRAVITY_DB_PATH}" "SELECT value FROM ItemTable WHERE key = 'antigravityAuthStatus';"`,
-            { encoding: 'utf-8', timeout: 5000 }
-        );
-
-        if (!result || !result.trim()) {
-            throw new Error('No auth status found in database');
-        }
-
-        const authData = JSON.parse(result.trim());
-        return {
-            apiKey: authData.apiKey,
-            name: authData.name,
-            email: authData.email,
-            // Include other fields we might need
-            ...authData
-        };
-    } catch (error) {
-        console.error('[Token] Database extraction failed:', error.message);
-        throw error;
-    }
-}
 
 /**
  * Extract the chat params from Antigravity's HTML page (fallback method)
@@ -83,7 +53,7 @@ async function extractChatParams() {
 async function getTokenData() {
     // Try database first (preferred - always has fresh token)
     try {
-        const dbData = extractTokenFromDB();
+        const dbData = getAuthStatus();
         if (dbData?.apiKey) {
             console.log('[Token] Got fresh token from SQLite database');
             return dbData;

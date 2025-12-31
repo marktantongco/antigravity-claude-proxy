@@ -58,6 +58,7 @@ Claude Code CLI → Express Server (server.js) → CloudCode Client → Antigrav
   - `thinking-utils.js` - Thinking block validation, filtering, reordering, and recovery logic
   - `signature-cache.js` - In-memory cache for Gemini thoughtSignatures
 - **src/account-manager.js**: Multi-account pool with sticky selection, rate limit handling, and automatic cooldown
+- **src/db/database.js**: Cross-platform SQLite database access using better-sqlite3 (Windows/Mac/Linux compatible)
 - **src/oauth.js**: Google OAuth implementation for adding accounts
 - **src/token-extractor.js**: Extracts tokens from local Antigravity app installation (legacy single-account mode)
 - **src/constants.js**: API endpoints, model mappings, OAuth config, and all configuration values

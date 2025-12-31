@@ -7,7 +7,6 @@
 import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { constants as fsConstants } from 'fs';
 import { dirname } from 'path';
-import { execSync } from 'child_process';
 import {
     ACCOUNT_CONFIG_PATH,
     ANTIGRAVITY_DB_PATH,
@@ -20,6 +19,7 @@ import {
 } from './constants.js';
 import { refreshAccessToken } from './oauth.js';
 import { formatDuration } from './utils/helpers.js';
+import { getAuthStatus } from './db/database.js';
 
 export class AccountManager {
     #accounts = [];
@@ -92,7 +92,7 @@ export class AccountManager {
      */
     async #loadDefaultAccount() {
         try {
-            const authData = this.#extractTokenFromDB();
+            const authData = getAuthStatus();
             if (authData?.apiKey) {
                 this.#accounts = [{
                     email: authData.email || 'default@antigravity',
@@ -113,22 +113,6 @@ export class AccountManager {
             // Create empty account list - will fail on first request
             this.#accounts = [];
         }
-    }
-
-    /**
-     * Extract token from Antigravity's SQLite database
-     */
-    #extractTokenFromDB(dbPath = ANTIGRAVITY_DB_PATH) {
-        const result = execSync(
-            `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityAuthStatus';"`,
-            { encoding: 'utf-8', timeout: 5000 }
-        );
-
-        if (!result || !result.trim()) {
-            throw new Error('No auth status found in database');
-        }
-
-        return JSON.parse(result.trim());
     }
 
     /**
@@ -453,7 +437,7 @@ export class AccountManager {
         } else {
             // Extract from database
             const dbPath = account.dbPath || ANTIGRAVITY_DB_PATH;
-            const authData = this.#extractTokenFromDB(dbPath);
+            const authData = getAuthStatus(dbPath);
             token = authData.apiKey;
         }
 
